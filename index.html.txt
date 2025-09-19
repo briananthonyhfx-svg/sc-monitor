@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Satan's Choice NS Monitor</title>
+    <link rel="icon" href="https://via.placeholder.com/192" type="image/png">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 10px;
+            background: #f4f4f4;
+        }
+        h1 {
+            font-size: 1.5em;
+            text-align: center;
+        }
+        .status {
+            font-weight: bold;
+            color: #333;
+            text-align: center;
+        }
+        button {
+            padding: 10px;
+            margin: 5px;
+            width: 100%;
+            font-size: 1em;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .alerts, .logs {
+            margin: 10px 0;
+        }
+        .alerts div, .logs div {
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 0 5px rgba(0,0,0,0.1);
+            margin-bottom: 5px;
+        }
+        .alert-link {
+            color: #007bff;
+            text-decoration: none;
+        }
+        .alert-link:hover {
+            text-decoration: underline;
+        }
+        @media (max-width: 600px) {
+            h1 { font-size: 1.2em; }
+            button { font-size: 0.9em; }
+        }
+    </style>
+</head>
+<body>
+    <h1>Satan's Choice NS Monitor</h1>
+    <p class="status">Status: <span id="status">Idle</span></p>
+    <button onclick="startScanner()">Start Scanner</button>
+    <button onclick="stopScanner()">Stop Scanner</button>
+    <button onclick="requestNotificationPermission()">Enable Notifications</button>
+    <h2>Recent Alerts (<span id="alert-count">0</span>)</h2>
+    <div class="alerts" id="alerts"></div>
+    <h2>Recent Logs</h2>
+    <div class="logs" id="logs"></div>
+
+    <script>
+        // Inline manifest for PWA
+        const manifest = {
+            "name": "Satan's Choice NS Monitor",
+            "short_name": "SC Monitor",
+            "start_url": "/index.html",
+            "display": "standalone",
+            "background_color": "#f4f4f4",
+            "theme_color": "#007bff",
+            "icons": [
+                {
+                    "src": "https://via.placeholder.com/192",
+                    "sizes": "192x192",
+                    "type": "image/png"
+                }
+            ]
+        };
+        const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
+        const manifestURL = URL.createObjectURL(manifestBlob);
+        const link = document.createElement('link');
+        link.rel = 'manifest';
+        link.href = manifestURL;
+        document.head.appendChild(link);
+
+        // Inline Service Worker for offline support
+        if ('serviceWorker' in navigator) {
+            const swScript = `
+                self.addEventListener('install', event => {
+                    event.waitUntil(
+                        caches.open('sc-monitor-cache').then(cache => {
+                            return cache.addAll(['/index.html']);
+                        })
+                    );
+                });
+                self.addEventListener('fetch', event => {
+                    event.respondWith(
+                        caches.match(event.request).then(response => {
+                            return response || fetch(event.request);
+                        })
+                    );
+                });
+            `;
+            const swBlob = new Blob([swScript], { type: 'application/javascript' });
+            const swURL = URL.createObjectURL(swBlob);
+            navigator.serviceWorker.register(swURL).then(() => {
+                logMessage('Service Worker registered.');
+            }).catch(err => logMessage('Service Worker error: ' + err));
+        }
+
+        // Comprehensive RSS sources for maximum search coverage
+        const RSS_URLS = [
+            'https://news.google.com/rss/search?q=%22Satan%27s+Choice%22+OR+%22Satans+Choice%22+OR+%22Satan+Choice%22+OR+%22outlaw+motorcycle+club%22+OR+%22biker+gang%22+OR+%22Hells+Angels+patchover%22+OR+%22motorcycle+club%22+OR+%22Halifax+bikers%22+OR+%22NS+motorcycle+gang%22+OR+%22biker+meetup%22+OR+%22clubhouse+opening%22+Halifax+OR+Dartmouth+OR+%22Nova+Scotia%22+OR+NS+when:90d&hl=en-CA&gl=CA&ceid=CA:en',
+            'https://www.cbc.ca/cmlink/rss-nova-scotia',
+            'https://www.ctvnews.ca/atlantic/feed/rss',
+            'https://globalnews.ca/feed/',
+            'https://www.reddit.com/r/Halifax/.rss',
+            'https://www.reddit.com/r/NovaScotia/.rss',
+            'https://www.bing.com/news/search?q=Satan%27s+Choice+Halifax+Nova+Scotia&format=rss'
+        ];
+        const movementKeywords = [
+            'movement', 'event', 'activity', 'chapter', 'meet', 'ride', 'gathering', 'news', 'rally', 'patchover',
+            'outlaw', 'biker', 'gang', 'expansion', 'meetup', 'clubhouse', 'motorcycle rally', 'club activity',
+            'biker meetup', 'clubhouse opening', 'mc activity', 'motorcycle gang', 'biker event', 'biker gathering',
+            'club meeting', 'outlaw activity', 'mc gathering', 'biker rally'
+        ];
+        const alertKeywords = [
+            'forming', 'starting', 'new', 'coming', 'planning', 'revival', 'return', 'recruitment', 'reopening',
+            'establishing', 'launching', 'new chapter', 'club formation', 'reestablishing'
+        ];
+        const nsLocations = /\b(halifax|dartmouth|nova scotia|ns)\b/i;
+        let alerts = JSON.parse(localStorage.getItem('alerts') || '[]');
+        let logs = JSON.parse(localStorage.getItem('logs') || '[]');
+        let scannerInterval = null;
+        const CACHE_KEY = 'sc-monitor-cache';
+        const CACHE_DURATION = 3600000; // 1 hour cache
+
+        function logMessage(message) {
+            const timestamp = new Date().toISOString();
+            logs.push(`[${timestamp.slice(0, 10)} ${timestamp.slice(11, 19)}] ${message}`);
+            if (logs.length > 20) logs.shift();
+            localStorage.setItem('logs', JSON.stringify(logs));
+            updateLogs();
+        }
+
+        function updateLogs() {
+            document.getElementById('logs').innerHTML = logs.map(log => `<div>${log}</div>`).join('');
+        }
+
+        function updateAlerts() {
+            document.getElementById('alerts').innerHTML = alerts.map(alert => 
+                `<div><strong>${alert.timestamp.slice(0, 10)}</strong>: ${alert.count} mention(s) - ${alert.details.map(d => `<a href="${d.url}" class="alert-link" target="_blank">${d.title.slice(0, 80)}... (Source: ${d.source})</a>`).join(', ')}</div>`
+            ).join('');
+            document.getElementById('alert-count').textContent = alerts.length;
+        }
+
+        function deduplicateItems(items) {
+            const seenTitles = new Set();
+            return items.filter(item => {
+                const title = (item.title || '').toLowerCase();
+                if (!title || seenTitles.has(title)) return false;
+                seenTitles.add(title);
+                return true;
+            });
+        }
+
+        function filterRelevantItems(items) {
+            const relevant = [];
+            items.forEach(item => {
+                const text = ((item.title || '') + ' ' + (item.description || '') + ' ' + (item.content || '')).toLowerCase();
+                if (movementKeywords.some(keyword => text.includes(keyword)) && nsLocations.test(text)) {
+                    const isAlert = alertKeywords.some(keyword => text.includes(keyword));
+                    relevant.push({
+                        item: item,
+                        is_alert: isAlert,
+                        match_terms: movementKeywords.filter(keyword => text.includes(keyword))
+                    });
+                }
+            });
+            return relevant.sort((a, b) => b.is_alert - a.is_alert); // Prioritize high-priority alerts
+        }
+
+        async function fetchRSS(url) {
+            const cache = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
+            const now = Date.now();
+            if (cache[url] && now - cache[url].timestamp < CACHE_DURATION) {
+                logMessage(`Using cached data for ${new URL(url).hostname}`);
+                return cache[url].data;
+            }
+            try {
+                const response = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(url)}`);
+                const data = await response.json();
+                if (data.status !== 'ok') {
+                    logMessage(`Error fetching ${new URL(url).hostname}: ${data.message}`);
+                    return [];
+                }
+                cache[url] = { timestamp: now, data: data.items };
+                localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+                return data.items;
+            } catch (e) {
+                logMessage(`Fetch error for ${new URL(url).hostname}: ${e.message}`);
+                return [];
+            }
+        }
+
+        async function runScan() {
+            document.getElementById('status').textContent = 'Scanning...';
+            logMessage('Fetching from comprehensive sources...');
+            const allItems = await Promise.all(RSS_URLS.map(fetchRSS)).then(results => results.flat());
+            const dedupedItems = deduplicateItems(allItems);
+            const relevantItems = filterRelevantItems(dedupedItems);
+            if (relevantItems.length > 0) {
+                const newAlerts = [{
+                    timestamp: new Date().toISOString(),
+                    count: relevantItems.length,
+                    details: relevantItems.map(item => ({
+                        title: item.item.title || 'Untitled',
+                        url: item.item.link || '#',
+                        source: item.item.source?.title || new URL(item.item.link || 'https://example.com').hostname
+                    }))
+                }];
+                alerts = [...newAlerts, ...alerts].slice(0, 20); // Keep last 20
+                localStorage.setItem('alerts', JSON.stringify(alerts));
+                updateAlerts();
+                logMessage(`Found ${relevantItems.length} relevant items across ${RSS_URLS.length} sources!`);
+                
+                if ('Notification' in window && Notification.permission === 'granted') {
+                    relevantItems.forEach(item => {
+                        new Notification(`Satan's Choice NS Alert (${item.is_alert ? 'High' : 'Low'} Priority)`, {
+                            body: `${(item.item.title || 'Untitled').slice(0, 100)}...\nMatches: ${item.match_terms.join(', ')}\nSource: ${item.item.source?.title || new URL(item.item.link || 'https://example.com').hostname}`,
+                            icon: 'https://via.placeholder.com/192?text=Alert',
+                            data: { url: item.item.link }
+                        });
+                    });
+                }
+            } else {
+                logMessage('No relevant activity found in comprehensive search.');
+            }
+            document.getElementById('status').textContent = 'Running';
+        }
+
+        function startScanner() {
+            if (!scannerInterval) {
+                runScan(); // Run immediately
+                scannerInterval = setInterval(runScan, 3600000); // Hourly
+                document.getElementById('status').textContent = 'Running';
+                logMessage('Comprehensive scanner started (hourly, multiple sources).');
+            }
+        }
+
+        function stopScanner() {
+            if (scannerInterval) {
+                clearInterval(scannerInterval);
+                scannerInterval = null;
+                document.getElementById('status').textContent = 'Stopped';
+                logMessage('Scanner stopped.');
+            }
+        }
+
+        function requestNotificationPermission() {
+            if ('Notification' in window) {
+                Notification.requestPermission().then(permission => {
+                    if (permission === 'granted') {
+                        logMessage('Notifications enabled.');
+                        alert('Notifications enabled! You will receive alerts from comprehensive searches.');
+                    } else {
+                        logMessage('Notifications denied.');
+                        alert('Please allow notifications in your browser settings.');
+                    }
+                });
+            } else {
+                logMessage('Notifications not supported by browser.');
+                alert('Your browser does not support notifications.');
+            }
+        }
+
+        // Initialize
+        updateAlerts();
+        updateLogs();
+
+        // Handle notification clicks
+        document.addEventListener('notificationclick', event => {
+            event.notification.close();
+            if (event.notification.data.url) {
+                window.open(event.notification.data.url, '_blank');
+            }
+        });
+    </script>
+</body>
+</html>
